@@ -1,0 +1,129 @@
+## Snakefile for UMI extraction, trimming with Trim Galore, PolyA trimming, Ribo-depletion
+
+# 1. Sample identifiers loaded dynamically
+SAMPLES, = glob_wildcards(
+    "/home/lulunots/Documents/1_ncRNA/3_fastq/ERA-MC-v{platenr}_fastq/{platenr}_*R1_001.fastq"
+)
+
+# 2. Paths & parameters
+CB_WHITELIST = "/home/lulunots/Documents/1_ncRNA/4_datafiles/SORTseq_cellbarcodes.tsv"
+FASTQ_DIR    = "/home/lulunots/Documents/1_ncRNA/3_fastq"
+REF_PATH     = "/home/lulunots/Documents/1_ncRNA/4_datafiles/SortMeRNA_database_files/smr_v4.3_default_db.fasta"
+THREADS      = 2
+SCRIPT_LOC   = f"{FASTQ_DIR}/Demultiplexing"
+
+rule all:
+    input:
+        # final non-rRNA reads from SortMeRNA (in out/ folder)
+        expand(
+            f"{FASTQ_DIR}/RiboDepletion/{{platenr}}/out/other.fq",
+            platenr=SAMPLES
+        ),
+        # demultiplex reports
+        expand(
+            f"{FASTQ_DIR}/Demultiplexed/{{platenr}}/{{platenr}}_other_demux_report.txt",
+            platenr=SAMPLES
+        )
+
+rule extract_umi:
+    input:
+        r1 = f"{FASTQ_DIR}/ERA-MC-v{{platenr}}_fastq/{{platenr}}_*R1_001.fastq",
+        r2 = f"{FASTQ_DIR}/ERA-MC-v{{platenr}}_fastq/{{platenr}}_*R2_001.fastq",
+        whitelist = CB_WHITELIST
+    output:
+        r1_out = f"{FASTQ_DIR}/UMI-tools_extract_{{platenr}}/processed_{{platenr}}_R1.fastq",
+        r2_out = f"{FASTQ_DIR}/UMI-tools_extract_{{platenr}}/processed_{{platenr}}_R2.fastq",
+        log    = f"{FASTQ_DIR}/UMI-tools_extract_{{platenr}}/umi_tools_{{platenr}}_log.txt"
+    params:
+        outdir = f"{FASTQ_DIR}/UMI-tools_extract_{{platenr}}"
+    shell:
+        """
+        mkdir -p {params.outdir}
+        umi_tools extract \
+          --stdin={input.r1} \
+          --stdout={output.r1_out} \
+          --bc-pattern=NNNNNNCCCCCCCC \
+          --read2-in={input.r2} \
+          --read2-out={output.r2_out} \
+          --whitelist={input.whitelist} \
+          --log={output.log}
+        """
+
+rule trim_r2:
+    input:
+        r2 = rules.extract_umi.output.r2_out
+    output:
+        trimmed = f"{FASTQ_DIR}/trimgalore/cutadapt_{{platenr}}_R2_cutfive_reverse_control.fastq"
+    params:
+        outdir   = f"{FASTQ_DIR}/trimgalore",
+        cutadapt = "/home/lulunots/anaconda3/bin/cutadapt"
+    shell:
+        """
+        mkdir -p {params.outdir}
+        trim_galore --path_to_cutadapt {params.cutadapt} --output_dir {params.outdir} {input.r2}
+        mv {params.outdir}/$(basename {input.r2} .fastq)_val_2.fq {output.trimmed}
+        """
+
+rule polyA_trim:
+    input:
+        r2 = rules.trim_r2.output.trimmed
+    output:
+        trimmed = f"{FASTQ_DIR}/PolyA_trimmed/PolyA_trimmed_{{platenr}}_R2.fastq",
+        log     = f"{FASTQ_DIR}/PolyA_trimmed/PolyA_trimmed_{{platenr}}_R2.log"
+    params:
+        outdir = f"{FASTQ_DIR}/PolyA_trimmed"
+    shell:
+        """
+        mkdir -p {params.outdir}
+        cutadapt -m 15 --trim-n -a "polyA1=AA{{5}}" \
+          -o {output.trimmed} {input.r2} > {output.log} 2>&1
+        """
+
+rule ribo_depletion:
+    input:
+        r2 = rules.polyA_trim.output.trimmed
+    output:
+        other = f"{FASTQ_DIR}/RiboDepletion/{{platenr}}/out/other.fq",
+        log   = f"{FASTQ_DIR}/RiboDepletion/{{platenr}}/sortmerna.log"
+    params:
+        ref     = REF_PATH,
+        workdir = f"{FASTQ_DIR}/RiboDepletion/{{platenr}}",
+        threads = THREADS
+    shell:
+        """
+        # Clear previous run and ensure 'out' directory exists
+        rm -rf {params.workdir}/out
+        mkdir -p {params.workdir}/out
+        sortmerna --ref {params.ref} \
+                  --reads {input.r2} \
+                  --workdir {params.workdir} \
+                  --fastx \
+                  --other {params.workdir}/out/other.fq \
+                  --threads {params.threads} \
+                  > {output.log} 2>&1
+        """
+
+rule demultiplex:
+    """
+    Split each plate-level FASTQ into per-well FASTQs via demultiplex wrapper,
+    and write a *_other_demux_report.txt as a completion token.
+    """
+    input:
+        fastq     = f"{FASTQ_DIR}/RiboDepletion/{{platenr}}/out/other.fq",
+        whitelist = CB_WHITELIST
+    output:
+        report    = f"{FASTQ_DIR}/Demultiplexed/{{platenr}}/{{platenr}}_other_demux_report.txt"
+    params:
+        script    = SCRIPT_LOC + "/demultiplex.py",
+        outdir    = f"{FASTQ_DIR}/Demultiplexed/{{platenr}}"
+    log:
+        f"{FASTQ_DIR}/Demultiplexed/{{platenr}}/demux_pipeline.log"
+    shell:
+        """
+        mkdir -p {params.outdir}
+        python {params.script} \
+            {input.fastq} \
+            {input.whitelist} \
+            --outdir {params.outdir} \
+            > {log} 2>&1
+        """

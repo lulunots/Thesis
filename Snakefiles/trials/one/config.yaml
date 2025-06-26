@@ -1,0 +1,35 @@
+# Central configuration for the Snakemake pipeline
+
+# Raw FASTQ input directory (outside the main data folder)
+raw_dir: "/home/lulunots/Documents/1_ncRNA/3_fastq"
+
+# Main data directory for intermediates and other static files
+data_dir: "data"
+
+# Scripts directory (contains demultiplex script)
+scripts_dir: "scripts"
+
+# Results directory (final outputs)
+results_dir: "results"
+
+# Subdirectories under data_dir (will be created automatically)
+intermediate_dir: "intermediate"
+datafiles_dir: "datafiles"
+
+# Wildcard patterns for sample discovery (configurable)
+sample_dir_pattern: "ERA-MC-v{platenr}_fastq"
+sample_pattern_r1: "{platenr}_*R1_001.fastq"
+sample_pattern_r2: "{platenr}_*R2_001.fastq"
+
+# Other resources (relative to data_dir/datafiles_dir)
+cb_whitelist: "SORTseq_cellbarcodes.tsv"
+ref_rRNA: "SortMeRNA_database_files/smr_v4.3_default_db.fasta"
+
+# Path to Cutadapt binary
+cutadapt_path: "/home/lulunots/anaconda3/bin/cutadapt"
+
+# Demultiplex script filename (located in scripts_dir)
+demux_script: "demux_tsv.py"
+
+# Number of threads for multithreaded rules
+threads: 8

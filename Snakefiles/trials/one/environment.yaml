@@ -1,0 +1,15 @@
+name: ncRNA_pipeline
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.8
+  - umi_tools
+  - cutadapt
+  - trim-galore
+  - sortmerna
+  - samtools
+  - pip
+  - pip:
+    - tqdm

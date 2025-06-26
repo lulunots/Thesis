@@ -1,0 +1,157 @@
+import os
+
+# Load centralized config
+RAW_DIR           = config["raw_dir"]
+DATA_DIR          = config["data_dir"]
+SCRIPTS_DIR       = config["scripts_dir"]
+RESULTS_DIR       = config["results_dir"]
+INTERMEDIATE_DIR  = os.path.join(DATA_DIR, config.get("intermediate_dir", "intermediate"))
+DATAFILES_DIR     = os.path.join(DATA_DIR, config.get("datafiles_dir", "datafiles"))
+
+CB_WHITELIST      = os.path.join(DATAFILES_DIR, config["cb_whitelist"])
+REF_PATH          = os.path.join(DATAFILES_DIR, config["ref_rRNA"])
+
+CUTADAPT          = config["cutadapt_path"]
+DEMUX_SCRIPT      = os.path.join(SCRIPTS_DIR, config["demux_script"])
+THREADS           = config["threads"]
+
+# Wildcard patterns for sample discovery
+SAMPLE_DIR_PATTERN = config["sample_dir_pattern"]
+SAMPLE_R1_PATTERN  = config["sample_pattern_r1"]
+SAMPLE_R2_PATTERN  = config["sample_pattern_r2"]
+
+# Create necessary base directories (exclude RAW_DIR)
+for d in [INTERMEDIATE_DIR, RESULTS_DIR, SCRIPTS_DIR, DATAFILES_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+# Discover sample plate numbers in RAW_DIR using configured patterns
+SAMPLES, = glob_wildcards(
+    os.path.join(RAW_DIR, SAMPLE_DIR_PATTERN, SAMPLE_R1_PATTERN)
+)
+
+rule extract_umi:
+    conda: "envs/environment.yaml"
+    input:
+        r1        = os.path.join(RAW_DIR, SAMPLE_DIR_PATTERN, SAMPLE_R1_PATTERN),
+        r2        = os.path.join(RAW_DIR, SAMPLE_DIR_PATTERN, SAMPLE_R2_PATTERN),
+        whitelist = CB_WHITELIST
+    output:
+        r1_out = temp(os.path.join(INTERMEDIATE_DIR, "umi_tools_extract", "{platenr}", "processed_{platenr}_R1.fastq")),
+        r2_out = temp(os.path.join(INTERMEDIATE_DIR, "umi_tools_extract", "{platenr}", "processed_{platenr}_R2.fastq")),
+        log    = os.path.join(INTERMEDIATE_DIR, "umi_tools_extract", "{platenr}", "umi_tools_{platenr}.log")
+    params:
+        outdir = os.path.join(INTERMEDIATE_DIR, "umi_tools_extract", "{platenr}")
+    shell:
+        """
+        mkdir -p {params.outdir}
+        umi_tools extract \
+            --stdin={input.r1} \
+            --stdout={output.r1_out} \
+            --bc-pattern=NNNNNNCCCCCCCC \
+            --read2-in={input.r2} \
+            --read2-out={output.r2_out} \
+            --whitelist={input.whitelist} \
+            --log={output.log}
+        # validate outputs
+        if [ ! -s {output.r1_out} ] || [ ! -s {output.r2_out} ]; then
+            echo "[ERROR] UMI extraction produced empty output" >&2
+            exit 1
+        fi
+        """
+
+rule trim_r2:
+    conda: "envs/environment.yaml"
+    input:
+        r2 = rules.extract_umi.output.r2_out
+    output:
+        trimmed = temp(os.path.join(INTERMEDIATE_DIR, "adapter_trimmed", "{platenr}_R2.fastq"))
+    params:
+        outdir   = os.path.join(INTERMEDIATE_DIR, "adapter_trimmed"),
+        cutadapt = CUTADAPT
+    shell:
+        """
+        mkdir -p {params.outdir}
+        trim_galore --path_to_cutadapt {params.cutadapt} --output_dir {params.outdir} {input.r2}
+        mv {params.outdir}/$(basename {input.r2} .fastq)_val_2.fq {output.trimmed}
+        # validate
+        if [ ! -s {output.trimmed} ]; then
+            echo "[ERROR] TrimGalore produced empty file" >&2
+            exit 1
+        fi
+        """
+
+rule polyA_trim:
+    conda: "envs/environment.yaml"
+    input:
+        r2 = rules.trim_r2.output.trimmed
+    output:
+        trimmed = temp(os.path.join(INTERMEDIATE_DIR, "polya_trimmed", "{platenr}_R2.fastq")),
+        log     = os.path.join(INTERMEDIATE_DIR, "polya_trimmed", "{platenr}_R2.log")
+    params:
+        outdir = os.path.join(INTERMEDIATE_DIR, "polya_trimmed")
+    shell:
+        """
+        mkdir -p {params.outdir}
+        cutadapt -m 15 --trim-n --regex -a "A{{5,}}" -o {output.trimmed} {input.r2} > {output.log} 2>&1
+        # validate
+        if [ ! -s {output.trimmed} ]; then
+            echo "[ERROR] PolyA trimming produced empty file" >&2
+            exit 1
+        fi
+        """
+
+rule ribo_depletion:
+    conda: "envs/environment.yaml"
+    threads: THREADS
+    input:
+        r2 = rules.polyA_trim.output.trimmed
+    output:
+        other = os.path.join(RESULTS_DIR, "ribo_depletion", "{platenr}", "out", "other.fq"),
+        log   = os.path.join(RESULTS_DIR, "ribo_depletion", "{platenr}", "sortmerna.log")
+    params:
+        ref     = REF_PATH,
+        workdir = os.path.join(RESULTS_DIR, "ribo_depletion", "{platenr}")
+    shell:
+        """
+        rm -rf {params.workdir}/out
+        mkdir -p {params.workdir}/out
+        sortmerna --ref {params.ref} \
+                  --reads {input.r2} \
+                  --workdir {params.workdir} \
+                  --fastx \
+                  --other {params.workdir}/out/other.fq \
+                  --threads {threads} \
+                  > {output.log} 2>&1
+        # validate
+        if [ ! -s {output.other} ]; then
+            echo "[ERROR] Ribo-depletion produced empty file" >&2
+            exit 1
+        fi
+        """
+
+rule demultiplex:
+    conda: "envs/environment.yaml"
+    input:
+        fastq     = rules.ribo_depletion.output.other,
+        whitelist = CB_WHITELIST
+    output:
+        report = os.path.join(RESULTS_DIR, "demultiplexed", "{platenr}", "{platenr}_other_demux_report.txt")
+    params:
+        script = DEMUX_SCRIPT,
+        outdir = os.path.join(RESULTS_DIR, "demultiplexed", "{platenr}")
+    log:
+        os.path.join(RESULTS_DIR, "demultiplexed", "{platenr}", "demux_pipeline.log")
+    shell:
+        """
+        mkdir -p {params.outdir}
+        python {params.script} \
+            {input.fastq} \
+            {input.whitelist} \
+            --outdir {params.outdir} \
+            > {log} 2>&1
+        # validate
+        if [ ! -s {output.report} ]; then
+            echo "[ERROR] Demultiplex report is empty" >&2
+            exit 1
+        fi
+        """
