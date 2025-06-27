@@ -1,0 +1,1 @@
+STAR --runMode genomeGenerate --genomeDir Output --genomeFastaFiles files/Homo_sapiens.GRCh38.dna.primary_assembly.fa --sjdbGTFfile files/Homo_sapiens.GRCh38.109.gtf --sjdbOverhang 59 --runThreadN 64
