@@ -1,6 +1,8 @@
 # Thesis
 
-This repositorty contains the scripts used in L.A. Notschaele's master thesis, and the start of an automated version of it in Snakemake
+This repositorty contains the scripts used in L.A. Notschaele's master thesis  
+  
+It also includes the beginning of an implementation to automate the workflow using Snakemake
   
 A rough overview of the main pipeline's flow can be found here:
 
